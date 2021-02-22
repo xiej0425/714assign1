@@ -1,0 +1,7 @@
+/Users/xiejing/Game-of-Life-in-parallel-MPI-OpenMP-CUDA/cmake-build-debug/CMakeFiles/install/local.dir
+/Users/xiejing/Game-of-Life-in-parallel-MPI-OpenMP-CUDA/cmake-build-debug/CMakeFiles/rebuild_cache.dir
+/Users/xiejing/Game-of-Life-in-parallel-MPI-OpenMP-CUDA/cmake-build-debug/CMakeFiles/game_mpi.exe.dir
+/Users/xiejing/Game-of-Life-in-parallel-MPI-OpenMP-CUDA/cmake-build-debug/CMakeFiles/edit_cache.dir
+/Users/xiejing/Game-of-Life-in-parallel-MPI-OpenMP-CUDA/cmake-build-debug/CMakeFiles/install/strip.dir
+/Users/xiejing/Game-of-Life-in-parallel-MPI-OpenMP-CUDA/cmake-build-debug/CMakeFiles/install.dir
+/Users/xiejing/Game-of-Life-in-parallel-MPI-OpenMP-CUDA/cmake-build-debug/CMakeFiles/list_install_components.dir
