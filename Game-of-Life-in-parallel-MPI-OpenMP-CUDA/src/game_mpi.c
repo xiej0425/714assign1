@@ -1,13 +1,3 @@
-// To compile: make mpi
-// To run: mpiexec -n [x] -f machines ./a.out [width] [height] [input_file]
-
-#define _DEFAULT_SOURCE
-
-#define GEN_LIMIT 1000
-
-#define CHECK_SIMILARITY
-#define SIMILARITY_FREQUENCY 3
-
 #define true 1
 #define false 0
 
@@ -24,41 +14,25 @@ void perror_exit(const char *message)
     exit(EXIT_FAILURE);
 }
 
-void print_to_file(char **univ, int width, int height)
+void printFile(char **outGrid, int width, int height)
 {
-    FILE *fout = fopen("./mpi_output.out", "w"); // printing the result to a file with
+    FILE *fout = fopen("./life.2d.csv", "w"); // printing the result to a file
+    // with
                                                  // 1 or 0 (1 being an alive cell and 0 a dead cell)
     for (int i = 0; i < height; i++)
     {
         for (int j = 0; j < width; j++)
         {
-            fprintf(fout, "%c", univ[i][j]);
+            if (outGrid[i][j] == '1')
+                fprintf(fout, "%d,%d\n", i, j);
         }
-        fprintf(fout, "\n");
     }
 
     fflush(fout);
     fclose(fout);
 }
 
-void show(char **univ, int width, int height)
-{
-    // Prints the result in stdout, using various VT100 escape codes
-    printf("\033[H");
-
-    for (int y = 0; y < height; y++)
-    {
-        for (int x = 0; x < width; x++)
-        {
-            printf(univ[y][x] ? "\033[07m  \033[m" : "  ");
-        }
-        printf("\033[E");
-    }
-
-    fflush(stdout);
-}
-
-void evolve(char **local, char **new, int width_local, int height_local)
+void update(char **local, char **new, int width_local, int height_local)
 {
     // Access the cells of the actual grid, leaving out the auxiliary cells
     // around the grid, yet, taking them into account for the calculations
@@ -114,170 +88,148 @@ int empty_all(char **local, int width_local, int height_local, MPI_Comm *new_com
     return (global_sum == comm_sz);
 }
 
-int similarity(char **local, char **local_old, int width_local, int height_local)
+int main(int argc, char *argv[])
 {
-    // Check if the internal grid is the same with the previous generation
-    for (int y = 1; y <= height_local; y++)
-    {
-        for (int x = 1; x <= width_local; x++)
-        {
-            if (local_old[y][x] != local[y][x])
-                return false;
-        }
+    // read configurations
+    if (argc != 5) {
+        perror_exit("argc count ");
+        exit(1);
     }
+    int nRows = 0, nCols = 0, nTime = 0;
 
-    return true;
-}
+    nTime = atoi(argv[2]);
+    nRows = atoi(argv[3]);
+    nCols = atoi(argv[4]);
+    char *fileName;
+    fileName = argv[1];
 
-int similarity_all(char **local, char **local_old, int width_local, int height_local, MPI_Comm *new_comm, int comm_sz)
-{
-    // Calculates if every subgrid is the same as in the previous generation
-    int local_flag = similarity(local, local_old, width_local, height_local),
-        global_sum;
-
-    MPI_Allreduce(&local_flag, &global_sum, 1, MPI_INT, MPI_SUM, *new_comm);
-
-    // Compare the number of instances that have the same grid
-    // between generations, with the total number of instances
-    return (global_sum == comm_sz);
-}
-
-void game(int width, int height, char *fileArg)
-{
     // Allocate space for the universal array, the main grid
-    char **univ = malloc(width * sizeof(char *));
-    char *a = malloc(width * height * sizeof(char));
-    if (univ == NULL || a == NULL)
+    char **srcGrid = malloc(nRows * sizeof(char *));
+    char *a = malloc(nRows * nCols * sizeof(char));
+    if (srcGrid == NULL || a == NULL)
         perror_exit("malloc: ");
-    for (int i = 0; i < width; i++)
-        univ[i] = &a[i * height];
+    for (int i = 0; i < nRows; i++)
+        srcGrid[i] = &a[i * nCols];
 
-    int my_rank, comm_sz;
+    int mpirank, mpisize;
 
     // Initialize the MPI
     MPI_Init(NULL, NULL);
-    MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &comm_sz);
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpirank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpisize);
 
-    MPI_Comm old_comm, new_comm;
+    MPI_Comm nextComm;
     int ndims, reorder, periods[2], dim_size[2];
 
-    old_comm = MPI_COMM_WORLD;
     ndims = 2; // 2D matrix/grid
-    int rows_columns = (int)sqrt(comm_sz);
+    int blockSize = (int)sqrt(mpisize);
 
-    int width_local, height_local;
+    int nRowsLocal, nColsLocal;
 
     // Calculate the local dimensions for the local subarrays
-    width_local = height_local = width / rows_columns;
+    nRowsLocal = nColsLocal = nRows / blockSize;
 
-    dim_size[0] = rows_columns; // number of rows
-    dim_size[1] = rows_columns; // number of columns
+    dim_size[0] = blockSize; // number of rows
+    dim_size[1] = blockSize; // number of columns
     periods[0] = 1;             // rows periodic (each column forms a ring)
     periods[1] = 1;             // columns periodic (each row forms a ring)
     reorder = 1;                // allows processes reordered for efficiency
 
     // Create a fully periodic, 2D Cartesian topology
-    MPI_Cart_create(old_comm, ndims, dim_size, periods, reorder, &new_comm);
-    int me, coords[2];
+    MPI_Cart_create(MPI_COMM_WORLD, ndims, dim_size, periods, reorder, &nextComm);
+    int thisRank, coords[2];
 
-    MPI_Comm_rank(new_comm, &me);
-    MPI_Cart_coords(new_comm, me, ndims, coords);
+    MPI_Comm_rank(nextComm, &thisRank);
+    MPI_Cart_coords(nextComm, thisRank, ndims, coords);
 
     double t_start = MPI_Wtime();
-    double msecs;
+    double secs;
     FILE *filePtr = NULL;
 
     // Allocate space in each instance for the local array(s)
-    char **local = malloc((width_local + 2) * sizeof(char *));
-    char *b = malloc((width_local + 2) * (height_local + 2) * sizeof(char));
-    if (local == NULL || b == NULL)
+    char **currGrid = malloc((nRowsLocal + 2) * sizeof(char *));
+    char *b = malloc((nRowsLocal + 2) * (nColsLocal + 2) * sizeof(char));
+    if (currGrid == NULL || b == NULL)
         perror_exit("malloc: ");
-    for (int i = 0; i < (width_local + 2); i++)
-        local[i] = &b[i * (height_local + 2)];
+    for (int i = 0; i < (nRowsLocal + 2); i++)
+        currGrid[i] = &b[i * (nColsLocal + 2)];
 
     MPI_Status status;
 
-    if (me == 0) // If I am the master instance
+    if (thisRank == 0) // If I am the master instance
     {
-        filePtr = fopen(fileArg, "r");
+        filePtr = fopen(fileName, "r");
         if (filePtr == NULL)
             perror_exit("fopen: ");
 
         // Populate univ with its contents
-        for (int y = 0; y < height; y++)
+        for (int y = 0; y < nCols; y++)
         {
-            for (int x = 0; x < width;)
+            for (int x = 0; x < nRows;)
             {
                 char c = fgetc(filePtr);
                 if ((c != EOF) && (c != '\n'))
                 {
-                    univ[y][x] = c;
+                    srcGrid[y][x] = c;
                     x++;
                 }
             }
         }
 
         // For every other instance, receive the local array
-        if (comm_sz > 1)
+        if (mpisize > 1)
         {
-            for (int i = 1; i < comm_sz; i++)
+            for (int i = 1; i < mpisize; i++)
             {
-                MPI_Cart_coords(new_comm, i, ndims, coords);
+                MPI_Cart_coords(nextComm, i, ndims, coords);
 
                 // And copy the data to univ
-                for (int i = 0; i < width_local; i++)
+                for (int i = 0; i < nRowsLocal; i++)
                 {
-                    for (int j = 0; j < height_local; j++)
+                    for (int j = 0; j < nColsLocal; j++)
                     {
-                        local[i + 1][j + 1] = univ[i + coords[0] * height_local][j + coords[1] * width_local];
+                        currGrid[i + 1][j + 1] = srcGrid[i + coords[0] * nColsLocal][j + coords[1] * nRowsLocal];
                     }
                 }
 
-                MPI_Send(&local[0][0], (width_local + 2) * (height_local + 2), MPI_CHAR, i, 0, new_comm);
+                MPI_Send(&currGrid[0][0], (nRowsLocal + 2) * (nColsLocal + 2), MPI_CHAR, i, 0, nextComm);
             }
         }
 
         // Copy the data from univ to my array
-        for (int i = 0; i < width_local; i++)
+        for (int i = 0; i < nRowsLocal; i++)
         {
-            for (int j = 0; j < height_local; j++)
+            for (int j = 0; j < nColsLocal; j++)
             {
-                local[i + 1][j + 1] = univ[i][j];
+                currGrid[i + 1][j + 1] = srcGrid[i][j];
             }
         }
     }
     else // If I am not the master instance
     {
         // Receive the local array from the master instance
-        MPI_Recv(&local[0][0], (width_local + 2) * (height_local + 2), MPI_CHAR, 0, MPI_ANY_TAG, new_comm, &status);
+        MPI_Recv(&currGrid[0][0], (nRowsLocal + 2) * (nColsLocal + 2), MPI_CHAR, 0, MPI_ANY_TAG, nextComm, &status);
     }
 
-    if (me == 0)
+    if (thisRank == 0)
     {
         fclose(filePtr);
         filePtr = NULL;
     }
 
-    msecs = (MPI_Wtime() - t_start) * 1000;
-
-    if (me == 0)
-        printf("Reading file:\t%.2lf msecs\n", msecs);
+    secs = (MPI_Wtime() - t_start) * 1000;
 
     // Allocate space for the new array which holds the next generation of the local grid
-    char **new = malloc((width_local + 2) * sizeof(char *));
-    char *c = malloc((width_local + 2) * (height_local + 2) * sizeof(char));
-    if (new == NULL || c == NULL)
+    char **nextGrid = malloc((nRowsLocal + 2) * sizeof(char *));
+    char *c = malloc((nRowsLocal + 2) * (nColsLocal + 2) * sizeof(char));
+    if (nextGrid == NULL || c == NULL)
         perror_exit("malloc: ");
-    for (int i = 0; i < (width_local + 2); i++)
-        new[i] = &c[i * (height_local + 2)];
+    for (int i = 0; i < (nRowsLocal + 2); i++)
+        nextGrid[i] = &c[i * (nColsLocal + 2)];
 
-    int generation = 1;
-#ifdef CHECK_SIMILARITY
-    int counter = 0;
-#endif
+    int iTime = 1;
 
-    MPI_Cart_coords(new_comm, me, ndims, coords);
+    MPI_Cart_coords(nextComm, thisRank, ndims, coords);
 
     // Calculating the coordinates of the neighbours, relative to the current process ones
     int north;
@@ -321,75 +273,76 @@ void game(int width, int height, char *fileArg)
     south_east_coords[1] = coords[1] + 1;
 
     // Get the rank of each direction
-    MPI_Cart_rank(new_comm, north_coords, &north);
-    MPI_Cart_rank(new_comm, south_coords, &south);
-    MPI_Cart_rank(new_comm, west_coords, &west);
-    MPI_Cart_rank(new_comm, east_coords, &east);
+    MPI_Cart_rank(nextComm, north_coords, &north);
+    MPI_Cart_rank(nextComm, south_coords, &south);
+    MPI_Cart_rank(nextComm, west_coords, &west);
+    MPI_Cart_rank(nextComm, east_coords, &east);
 
-    MPI_Cart_rank(new_comm, north_west_coords, &north_west);
-    MPI_Cart_rank(new_comm, north_east_coords, &north_east);
-    MPI_Cart_rank(new_comm, south_west_coords, &south_west);
-    MPI_Cart_rank(new_comm, south_east_coords, &south_east);
+    MPI_Cart_rank(nextComm, north_west_coords, &north_west);
+    MPI_Cart_rank(nextComm, north_east_coords, &north_east);
+    MPI_Cart_rank(nextComm, south_west_coords, &south_west);
+    MPI_Cart_rank(nextComm, south_east_coords, &south_east);
 
     // Vector datatype representing columns in an 2D array
     MPI_Datatype vertical_type;
 
-    MPI_Type_vector(height_local, 1, width_local + 2, MPI_CHAR, &vertical_type);
+    MPI_Type_vector(nColsLocal, 1, nRowsLocal + 2, MPI_CHAR, &vertical_type);
     MPI_Type_commit(&vertical_type);
 
     MPI_Request requests_odd[16];
     MPI_Request requests_even[16];
 
     // Communication requests to exchange data from local array
-    MPI_Recv_init(&local[0][1], width_local, MPI_CHAR, north, 1, new_comm, &requests_odd[0]);
-    MPI_Send_init(&local[1][1], width_local, MPI_CHAR, north, 2, new_comm, &requests_odd[1]);
-    MPI_Recv_init(&local[height_local + 1][1], width_local, MPI_CHAR, south, 2, new_comm, &requests_odd[2]);
-    MPI_Send_init(&local[height_local][1], width_local, MPI_CHAR, south, 1, new_comm, &requests_odd[3]);
+    MPI_Recv_init(&currGrid[0][1], nRowsLocal, MPI_CHAR, north, 1, nextComm, &requests_odd[0]);
+    MPI_Send_init(&currGrid[1][1], nRowsLocal, MPI_CHAR, north, 2, nextComm, &requests_odd[1]);
+    MPI_Recv_init(&currGrid[nColsLocal + 1][1], nRowsLocal, MPI_CHAR, south, 2, nextComm, &requests_odd[2]);
+    MPI_Send_init(&currGrid[nColsLocal][1], nRowsLocal, MPI_CHAR, south, 1, nextComm, &requests_odd[3]);
 
-    MPI_Recv_init(&local[1][width_local + 1], 1, vertical_type, east, 3, new_comm, &requests_odd[4]);
-    MPI_Send_init(&local[1][width_local], 1, vertical_type, east, 4, new_comm, &requests_odd[5]);
-    MPI_Recv_init(&local[1][0], 1, vertical_type, west, 4, new_comm, &requests_odd[6]);
-    MPI_Send_init(&local[1][1], 1, vertical_type, west, 3, new_comm, &requests_odd[7]);
+    MPI_Recv_init(&currGrid[1][nRowsLocal + 1], 1, vertical_type, east, 3, nextComm, &requests_odd[4]);
+    MPI_Send_init(&currGrid[1][nRowsLocal], 1, vertical_type, east, 4, nextComm, &requests_odd[5]);
+    MPI_Recv_init(&currGrid[1][0], 1, vertical_type, west, 4, nextComm, &requests_odd[6]);
+    MPI_Send_init(&currGrid[1][1], 1, vertical_type, west, 3, nextComm, &requests_odd[7]);
 
-    MPI_Recv_init(&local[0][0], 1, MPI_CHAR, north_west, 5, new_comm, &requests_odd[8]);
-    MPI_Send_init(&local[1][1], 1, MPI_CHAR, north_west, 6, new_comm, &requests_odd[9]);
-    MPI_Recv_init(&local[0][width_local + 1], 1, MPI_CHAR, north_east, 7, new_comm, &requests_odd[10]);
-    MPI_Send_init(&local[1][width_local], 1, MPI_CHAR, north_east, 8, new_comm, &requests_odd[11]);
+    MPI_Recv_init(&currGrid[0][0], 1, MPI_CHAR, north_west, 5, nextComm, &requests_odd[8]);
+    MPI_Send_init(&currGrid[1][1], 1, MPI_CHAR, north_west, 6, nextComm, &requests_odd[9]);
+    MPI_Recv_init(&currGrid[0][nRowsLocal + 1], 1, MPI_CHAR, north_east, 7, nextComm, &requests_odd[10]);
+    MPI_Send_init(&currGrid[1][nRowsLocal], 1, MPI_CHAR, north_east, 8, nextComm, &requests_odd[11]);
 
-    MPI_Recv_init(&local[height_local + 1][0], 1, MPI_CHAR, south_west, 8, new_comm, &requests_odd[12]);
-    MPI_Send_init(&local[height_local][1], 1, MPI_CHAR, south_west, 7, new_comm, &requests_odd[13]);
-    MPI_Recv_init(&local[height_local + 1][width_local + 1], 1, MPI_CHAR, south_east, 6, new_comm, &requests_odd[14]);
-    MPI_Send_init(&local[height_local][width_local], 1, MPI_CHAR, south_east, 5, new_comm, &requests_odd[15]);
+    MPI_Recv_init(&currGrid[nColsLocal + 1][0], 1, MPI_CHAR, south_west, 8, nextComm, &requests_odd[12]);
+    MPI_Send_init(&currGrid[nColsLocal][1], 1, MPI_CHAR, south_west, 7, nextComm, &requests_odd[13]);
+    MPI_Recv_init(&currGrid[nColsLocal + 1][nRowsLocal + 1], 1, MPI_CHAR, south_east, 6, nextComm, &requests_odd[14]);
+    MPI_Send_init(&currGrid[nColsLocal][nRowsLocal], 1, MPI_CHAR, south_east, 5, nextComm, &requests_odd[15]);
 
     // Communication requests to exchange data from new array
-    MPI_Recv_init(&new[0][1], width_local, MPI_CHAR, north, 1, new_comm, &requests_even[0]);
-    MPI_Send_init(&new[1][1], width_local, MPI_CHAR, north, 2, new_comm, &requests_even[1]);
-    MPI_Recv_init(&new[height_local + 1][1], width_local, MPI_CHAR, south, 2, new_comm, &requests_even[2]);
-    MPI_Send_init(&new[height_local][1], width_local, MPI_CHAR, south, 1, new_comm, &requests_even[3]);
+    MPI_Recv_init(&nextGrid[0][1], nRowsLocal, MPI_CHAR, north, 1, nextComm, &requests_even[0]);
+    MPI_Send_init(&nextGrid[1][1], nRowsLocal, MPI_CHAR, north, 2, nextComm, &requests_even[1]);
+    MPI_Recv_init(&nextGrid[nColsLocal + 1][1], nRowsLocal, MPI_CHAR, south, 2, nextComm, &requests_even[2]);
+    MPI_Send_init(&nextGrid[nColsLocal][1], nRowsLocal, MPI_CHAR, south, 1, nextComm, &requests_even[3]);
 
-    MPI_Recv_init(&new[1][width_local + 1], 1, vertical_type, east, 3, new_comm, &requests_even[4]);
-    MPI_Send_init(&new[1][width_local], 1, vertical_type, east, 4, new_comm, &requests_even[5]);
-    MPI_Recv_init(&new[1][0], 1, vertical_type, west, 4, new_comm, &requests_even[6]);
-    MPI_Send_init(&new[1][1], 1, vertical_type, west, 3, new_comm, &requests_even[7]);
+    MPI_Recv_init(&nextGrid[1][nRowsLocal + 1], 1, vertical_type, east, 3, nextComm, &requests_even[4]);
+    MPI_Send_init(&nextGrid[1][nRowsLocal], 1, vertical_type, east, 4, nextComm, &requests_even[5]);
+    MPI_Recv_init(&nextGrid[1][0], 1, vertical_type, west, 4, nextComm, &requests_even[6]);
+    MPI_Send_init(&nextGrid[1][1], 1, vertical_type, west, 3, nextComm, &requests_even[7]);
 
-    MPI_Recv_init(&new[0][0], 1, MPI_CHAR, north_west, 5, new_comm, &requests_even[8]);
-    MPI_Send_init(&new[1][1], 1, MPI_CHAR, north_west, 6, new_comm, &requests_even[9]);
-    MPI_Recv_init(&new[0][width_local + 1], 1, MPI_CHAR, north_east, 7, new_comm, &requests_even[10]);
-    MPI_Send_init(&new[1][width_local], 1, MPI_CHAR, north_east, 8, new_comm, &requests_even[11]);
+    MPI_Recv_init(&nextGrid[0][0], 1, MPI_CHAR, north_west, 5, nextComm, &requests_even[8]);
+    MPI_Send_init(&nextGrid[1][1], 1, MPI_CHAR, north_west, 6, nextComm, &requests_even[9]);
+    MPI_Recv_init(&nextGrid[0][nRowsLocal + 1], 1, MPI_CHAR, north_east, 7, nextComm, &requests_even[10]);
+    MPI_Send_init(&nextGrid[1][nRowsLocal], 1, MPI_CHAR, north_east, 8, nextComm, &requests_even[11]);
 
-    MPI_Recv_init(&new[height_local + 1][0], 1, MPI_CHAR, south_west, 8, new_comm, &requests_even[12]);
-    MPI_Send_init(&new[height_local][1], 1, MPI_CHAR, south_west, 7, new_comm, &requests_even[13]);
-    MPI_Recv_init(&new[height_local + 1][width_local + 1], 1, MPI_CHAR, south_east, 6, new_comm, &requests_even[14]);
-    MPI_Send_init(&new[height_local][width_local], 1, MPI_CHAR, south_east, 5, new_comm, &requests_even[15]);
+    MPI_Recv_init(&nextGrid[nColsLocal + 1][0], 1, MPI_CHAR, south_west, 8, nextComm, &requests_even[12]);
+    MPI_Send_init(&nextGrid[nColsLocal][1], 1, MPI_CHAR, south_west, 7, nextComm, &requests_even[13]);
+    MPI_Recv_init(&nextGrid[nColsLocal + 1][nRowsLocal + 1], 1, MPI_CHAR, south_east, 6, nextComm, &requests_even[14]);
+    MPI_Send_init(&nextGrid[nColsLocal][nRowsLocal], 1, MPI_CHAR, south_east, 5, nextComm, &requests_even[15]);
 
     t_start = MPI_Wtime();
 
     // The actual loop of Game of Life
-    while ((!empty_all(local, width_local, height_local, &new_comm, comm_sz)) && (generation <= GEN_LIMIT))
+    while ((!empty_all(currGrid, nRowsLocal, nColsLocal, &nextComm, mpisize))
+    && (iTime <= nTime))
     {
 
         // Different requests for odd and even generations in order to compensate the pointer swap of local and new arrays
-        if ((generation % 2) == 1)
+        if ((iTime % 2) == 1)
         {
             MPI_Startall(16, requests_odd);
             MPI_Waitall(16, requests_odd, MPI_STATUSES_IGNORE);
@@ -400,119 +353,95 @@ void game(int width, int height, char *fileArg)
             MPI_Waitall(16, requests_even, MPI_STATUSES_IGNORE);
         }
 
-        evolve(local, new, width_local, height_local);
+        update(currGrid, nextGrid, nRowsLocal, nColsLocal);
 
         // The pointer swap
-        char **temp_array = local;
-        local = new;
-        new = temp_array;
+        char **tempGrid = currGrid;
+        currGrid = nextGrid;
+        nextGrid = tempGrid;
 
-#ifdef CHECK_SIMILARITY
-        counter++;
-        if (counter == SIMILARITY_FREQUENCY)
-        {
-            if (similarity_all(local, new, width_local, height_local, &new_comm, comm_sz))
-                break;
-            counter = 0;
-        }
-#endif
-
-        generation++;
+        iTime++;
 
     } // End of while loop
 
-    msecs = (MPI_Wtime() - t_start) * 1000;
+    // Each MPI process sends its rank to reduction, root MPI process collects the result
+    double time_sum = 0;
+    double time_max = 0;
+    double time_min = 0;
+    secs = MPI_Wtime() - t_start;
+    MPI_Reduce(&secs, &time_sum, 1, MPI_DOUBLE, MPI_SUM, 0,
+               MPI_COMM_WORLD);
+    MPI_Reduce(&secs, &time_max, 1, MPI_DOUBLE, MPI_MAX, 0,
+               MPI_COMM_WORLD);
+    MPI_Reduce(&secs, &time_min, 1, MPI_DOUBLE, MPI_MIN, 0,
+               MPI_COMM_WORLD);
 
-    if (me == 0) // If I am not the master instance
-        printf("Generations:\t%d\nExecution time:\t%.2lf msecs\n", generation - 1, msecs);
-
-    if (me == 0) // If I am the master instance
+    if (thisRank == 0) { // If I am not the master instance
+        double avg_time = time_sum / (double)mpisize;
+        printf("TIME: Min: %f s Avg: %f s Max: %f s\n", time_min, avg_time,
+                time_max);
+    }
+    if (thisRank == 0) // If I am the master instance
     {
-        t_start = MPI_Wtime();
         // Copy the dat from my array to univ
-        for (int i = 0; i < width_local; i++)
+        for (int i = 0; i < nRowsLocal; i++)
         {
-            for (int j = 0; j < height_local; j++)
+            for (int j = 0; j < nColsLocal; j++)
             {
-                univ[i][j] = local[i + 1][j + 1];
+                srcGrid[i][j] = currGrid[i + 1][j + 1];
             }
         }
 
         // For every other instance, receive the local array
-        if (comm_sz > 1)
+        if (mpisize > 1)
         {
-            for (int i = 1; i < comm_sz; i++)
+            for (int i = 1; i < mpisize; i++)
             {
-                MPI_Cart_coords(new_comm, i, ndims, coords);
-                MPI_Recv(&local[0][0], (width_local + 2) * (height_local + 2), MPI_CHAR, i, 0, new_comm, &status);
+                MPI_Cart_coords(nextComm, i, ndims, coords);
+                MPI_Recv(&currGrid[0][0], (nRowsLocal + 2) * (nColsLocal + 2), MPI_CHAR, i, 0, nextComm, &status);
 
                 // And copy the data to univ
-                for (int i = 0; i < width_local; i++)
+                for (int i = 0; i < nRowsLocal; i++)
                 {
-                    for (int j = 0; j < height_local; j++)
+                    for (int j = 0; j < nColsLocal; j++)
                     {
-                        univ[i + coords[0] * height_local][j + coords[1] * width_local] = local[i + 1][j + 1];
+                        srcGrid[i + coords[0] * nColsLocal][j + coords[1] * nRowsLocal] = currGrid[i + 1][j + 1];
                     }
                 }
             }
         }
 
-        // show(univ, width, height);
+        printFile(srcGrid, nRows, nCols);
 
-        print_to_file(univ, width, height);
-
-        msecs = (MPI_Wtime() - t_start) * 1000;
-
-        printf("Writing file:\t%.2lf msecs\n", msecs);
     }
     else // If I am not the master instance
     {
         // Send the local array to the master instance
-        MPI_Send(&local[0][0], (width_local + 2) * (height_local + 2), MPI_CHAR, 0, 0, new_comm);
+        MPI_Send(&currGrid[0][0], (nRowsLocal + 2) * (nColsLocal + 2), MPI_CHAR, 0, 0, nextComm);
     }
 
     // Deallocate space no longoer needed
     free(b);
-    free(local);
+    free(currGrid);
     b = NULL;
-    local = NULL;
+    currGrid = NULL;
 
     free(c);
-    free(new);
+    free(nextGrid);
     c = NULL;
-    new = NULL;
+    nextGrid = NULL;
 
     free(a);
-    free(univ);
+    free(srcGrid);
     a = NULL;
-    univ = NULL;
+    srcGrid = NULL;
 
     MPI_Type_free(&vertical_type);
 
     MPI_Finalize();
-}
 
-int main(int argc, char *argv[])
-{
-    int width = 0, height = 0;
-
-    if (argc > 1)
-        width = atoi(argv[1]);
-    if (argc > 2)
-        height = atoi(argv[2]);
-
-    height = width;
-
-    if (width <= 0)
-        width = 30;
-    if (height <= 0)
-        height = 30;
-
-    if (argc > 3)
-        game(width, height, argv[3]);
-
-    printf("Finished\n");
     fflush(stdout);
 
     return 0;
+
 }

@@ -236,17 +236,17 @@ int main (int argc, char* argv[]){
         }
 
     }
-    double secs = MPI_Wtime() - t_start;
+    double msecs = (MPI_Wtime() - t_start) * 1000;
 
     // Each MPI process sends its rank to reduction, root MPI process collects the result
     double time_sum = 0;
     double time_max = 0;
     double time_min = 0;
-    MPI_Reduce(&secs, &time_sum, 1, MPI_DOUBLE, MPI_SUM, mpiroot,
+    MPI_Reduce(&msecs, &time_sum, 1, MPI_DOUBLE, MPI_SUM, mpiroot,
                MPI_COMM_WORLD);
-    MPI_Reduce(&secs, &time_max, 1, MPI_DOUBLE, MPI_MAX, mpiroot,
+    MPI_Reduce(&msecs, &time_max, 1, MPI_DOUBLE, MPI_MAX, mpiroot,
                MPI_COMM_WORLD);
-    MPI_Reduce(&secs, &time_min, 1, MPI_DOUBLE, MPI_MIN, mpiroot,
+    MPI_Reduce(&msecs, &time_min, 1, MPI_DOUBLE, MPI_MIN, mpiroot,
                MPI_COMM_WORLD);
     if(mpirank == mpiroot)
     {
