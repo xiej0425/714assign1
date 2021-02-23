@@ -189,6 +189,7 @@ void game(int width, int height, char *fileArg)
 #endif
 
         unsigned char **temp_univ = univ;
+        /* to make sure the memory is not lost and can manipulate by ptr */
         univ = new_univ;
         new_univ = temp_univ;
 

@@ -6,6 +6,8 @@
 #include <time.h>
 #include <vector>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 
@@ -20,18 +22,15 @@ int main (int argc, char* argv[]){
     int mpiroot = 0;
     int nRows, nCols, nTime;
 
+    // read configurations
     if (mpirank == mpiroot) {
-        if (argc != 4){
-            cerr << "incorrect number of input, expected 3" << endl;
+        if (argc != 5) {
+            cerr << "incorrect number of input, expected 4" << endl;
             exit(1);
         }
         nRows = atoi(argv[1]);
         nCols = atoi(argv[2]);
-        nTime = atoi(argv[3]);
-        if (nRows < 1 || nCols < 1 || nTime < 1) {
-            cerr << "incorrect input range" << endl;
-            exit(1);
-        }
+        nTime = atoi(argv[3]) + 1;
     }
 
     MPI_Bcast(&nRows, 1, MPI_INT, mpiroot, MPI_COMM_WORLD);
@@ -51,11 +50,112 @@ int main (int argc, char* argv[]){
     vector<vector<int> > nextGrid(nRowsLocalWithGhost, vector<int>
             (nColsWithGhost, 0));
 
-    for (int iRow = 1; iRow <= nRows; ++iRow){
-        for (int iCol = 1; iCol <= nCols; ++iCol){
-            currGrid[iRow][iCol] = rand() % 2;
+
+    if (mpirank == mpiroot) {
+        // read input file
+//        char* fileArg;
+//        FILE *filePtr = NULL;
+//        fileArg = argv[4];
+//        if (nRows < 1 || nCols < 1 || nTime < 1) {
+//            cerr << "incorrect input range" << endl;
+//            exit(1);
+//        }
+//
+//        filePtr = fopen(fileArg, "r");
+//        if (filePtr == NULL) {
+//            cerr << "fopen" << endl;
+//            exit(1);
+//        }
+//        cout << "read success: " << endl;
+//
+//        for (int iRow = 0; iRow < nRows; ++iRow){
+//            for (int iCol = 0; iCol < nCols;){
+//                char c = fgetc(filePtr);
+//                if ((c != EOF) && (c != '\n')) {
+//                    srcGrid[iRow][iCol] = c - '0';
+//                    iCol++;
+//                }
+//            }
+//        }
+        vector<vector<int> > srcGrid(nRows, vector<int> (nCols, 0));
+
+        ifstream infile( argv[4] );
+        if (!infile.is_open()){
+            cerr << "fopen wrong" << endl;
+            exit(1);
+        }
+        while (infile)
+        {
+            string s;
+            if (!getline( infile, s )) break;
+
+            istringstream ss( s );
+            vector <string> record;
+
+            while (ss)
+            {
+                string s;
+                if (!getline( ss, s, ',' )) break;
+                record.push_back( s );
+            }
+            srcGrid[stoi(record[0])][stoi(record[1])] = 1;
+        }
+//        if (!infile.eof())
+//        {
+//            cerr << "Fooey!\n";
+//        }
+
+
+
+//        cout << "read from src: " << endl;
+//        for (int iRow = 0; iRow < nRows; ++iRow){
+//            for (int iCol = 0; iCol < nCols; ++iCol){
+//                cout << srcGrid[iRow][iCol] << " ";
+//            }
+//            cout << endl;
+//        }
+//        cout << endl;
+
+        // formulate its own grid
+        for (int iRow = 0; iRow < nRowsLocal; ++iRow){
+            for (int iCol = 0; iCol < nCols; ++iCol){
+                currGrid[iRow + 1][iCol + 1] = srcGrid[iRow][iCol];
+            }
+        }
+
+        // send to other ranks
+        for (int destRank = 1; destRank < mpisize; ++destRank){
+            int nSend = nRows / mpisize;
+            int nRowInPrevRank = nSend;
+            // last rank
+            if (destRank == mpisize - 1){
+                nSend += nRows % mpisize;
+            }
+
+            vector<int> buff(nCols, 0);
+            for (int iRow = destRank * nRowInPrevRank; iRow < (destRank *
+            nRowInPrevRank + nSend); ++iRow){
+                MPI_Send(&srcGrid[iRow][0], nCols, MPI_INT, destRank, 0,
+                         MPI_COMM_WORLD);
+            }
+        }
+        cout << "rank: " << mpirank << "send all finish" << endl;
+    }
+
+    if (mpirank != mpiroot){
+        // send row by row
+        for (int iRow = 1; iRow <= nRowsLocal; ++iRow){
+            MPI_Recv(&currGrid[iRow][1], nCols, MPI_INT, mpiroot, 0,
+                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         }
     }
+
+    // rand values
+//    for (int iRow = 1; iRow <= nRowsLocal; ++iRow){
+//        for (int iCol = 1; iCol <= nCols; ++iCol){
+//            currGrid[iRow][iCol] = rand() % 2;
+//        }
+//    }
 
     int upperNeighbor = (mpirank == 0) ? mpisize - 1 : mpirank - 1;
     int lowerNeighbor = (mpirank == mpisize - 1) ? 0 : mpirank + 1;
@@ -75,47 +175,68 @@ int main (int argc, char* argv[]){
         MPI_Recv(&currGrid[0][0], nColsWithGhost, MPI_INT, upperNeighbor, 0,
                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-        for (int iRow = 0; iRow < nRowsLocalWithGhost; ++iRow){
-            currGrid[iRow][0] = currGrid[iRow][nCols];
-            currGrid[iRow][nCols + 1] = currGrid[iRow][1];
+        if (mpirank == mpiroot){
+            for (int iCol = 0; iCol < nColsWithGhost; ++iCol){
+                currGrid[0][iCol] = 0;
+            }
         }
+        if (mpirank == mpisize - 1){
+            for (int iCol = 0; iCol < nColsWithGhost; ++iCol){
+                currGrid[nRowsLocalWithGhost-1][iCol] = 0;
+            }
+        }
+
+        // ghost cols
+//        for (int iRow = 0; iRow < nRowsLocalWithGhost; ++iRow){
+//            currGrid[iRow][0] = currGrid[iRow][nCols];
+//            currGrid[iRow][nCols + 1] = currGrid[iRow][1];
+//        }
 
         // display
-        if (mpirank != mpiroot) {
-            for (int iRow = 1; iRow <= nRowsLocal; ++iRow){
-                MPI_Send(&currGrid[iRow][1], nCols, MPI_INT, mpiroot, 0,
-                        MPI_COMM_WORLD);
-            }
-        }
-
-        if (mpirank == mpiroot) {
-            cout << "iTime: " << iTime << "-----------------------" << endl;
-
-            // print its own data
-            for (int iRow = 1; iRow <= nRowsLocal; ++iRow){
-                for (int iCol = 1; iCol <= nCols; ++iCol){
-                    cout << currGrid[iRow][iCol] << " ";
+        if (iTime == nTime - 1) {
+            if (mpirank != mpiroot) {
+                // send row by row
+                for (int iRow = 1; iRow <= nRowsLocal; ++iRow) {
+                    MPI_Send(&currGrid[iRow][1], nCols, MPI_INT, mpiroot, 0,
+                             MPI_COMM_WORLD);
                 }
-                cout << endl;
             }
 
-            // receive from other ranks
-            for (int sourceRank = 1; sourceRank < mpisize; ++sourceRank){
-                int nRecv = nRows / mpisize;
-                // last rank
-                if (sourceRank == mpisize - 1){
-                    nRecv += nRows % mpisize;
-                }
+            if (mpirank == mpiroot) {
+                cout << "iTime: " << iTime << "-----------------------" << endl;
 
-                // FIX: nRecv meaning
-                vector<int> buff(nCols, 0);
-                for (int iRecv = 0; iRecv < nRecv; ++iRecv){
-                    MPI_Recv(&buff[0], nCols, MPI_INT, sourceRank, 0,
-                            MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                    for (int i : buff){
-                        cout << i << " ";
+                // print its own data
+                for (int iRow = 1; iRow <= nRowsLocal; ++iRow) {
+                    for (int iCol = 1; iCol <= nCols; ++iCol) {
+                        if (currGrid[iRow][iCol] == 1) {
+                            cout << iRow-1 << "," << iCol-1 << endl;
+                        }
                     }
-                    cout << endl;
+                }
+
+                // receive from other ranks
+                for (int sourceRank = 1; sourceRank < mpisize; ++sourceRank) {
+                    int nRecv = nRows / mpisize;
+                    int nRowsPerRank = nRecv;
+                    // last rank
+                    if (sourceRank == mpisize - 1) {
+                        nRecv += nRows % mpisize;
+                    }
+
+                    // FIX: nRecv meaning
+                    vector<int> buff(nCols, 0);
+                    for (int iRecv = 0; iRecv < nRecv; ++iRecv) {
+                        MPI_Recv(&buff[0], nCols, MPI_INT, sourceRank, 0,
+                                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                        int col_cnt = 0;
+                        for (int i : buff) {
+                            if (i == 1){
+                                cout << sourceRank * nRowsPerRank + iRecv -1 <<
+                                "," << col_cnt-1 << endl;
+                            }
+                            col_cnt++;
+                        }
+                    }
                 }
             }
         }
@@ -163,8 +284,8 @@ int main (int argc, char* argv[]){
 
     }
 
-    MPI_Comm old_comm, new_comm;
-    int ndims, reorder, periods[2], dim_size[2];
+//    MPI_Comm old_comm, new_comm;
+//    int ndims, reorder, periods[2], dim_size[2];
     MPI_Finalize();
     return 0;
 }
