@@ -28,9 +28,9 @@ int main (int argc, char* argv[]){
             cerr << "incorrect number of input, expected 4" << endl;
             exit(1);
         }
-        nRows = atoi(argv[1]);
-        nCols = atoi(argv[2]);
-        nTime = atoi(argv[3]) + 1;
+        nRows = atoi(argv[3]);
+        nCols = atoi(argv[4]);
+        nTime = atoi(argv[2]);
     }
 
     MPI_Bcast(&nRows, 1, MPI_INT, mpiroot, MPI_COMM_WORLD);
@@ -79,7 +79,7 @@ int main (int argc, char* argv[]){
 //        }
         vector<vector<int> > srcGrid(nRows, vector<int> (nCols, 0));
 
-        ifstream infile( argv[4] );
+        ifstream infile( argv[1] );
         if (!infile.is_open()){
             cerr << "fopen wrong" << endl;
             exit(1);
@@ -139,7 +139,6 @@ int main (int argc, char* argv[]){
                          MPI_COMM_WORLD);
             }
         }
-        cout << "rank: " << mpirank << "send all finish" << endl;
     }
 
     if (mpirank != mpiroot){
@@ -163,6 +162,7 @@ int main (int argc, char* argv[]){
     const int ALIVE = 1;
     const int DEAD = 0;
 
+    double t_start = MPI_Wtime();
     // time loop
     for (int iTime = 0; iTime < nTime; ++iTime){
         MPI_Send(&currGrid[1][0], nColsWithGhost, MPI_INT, upperNeighbor, 0,
@@ -187,59 +187,12 @@ int main (int argc, char* argv[]){
         }
 
         // ghost cols
-//        for (int iRow = 0; iRow < nRowsLocalWithGhost; ++iRow){
-//            currGrid[iRow][0] = currGrid[iRow][nCols];
-//            currGrid[iRow][nCols + 1] = currGrid[iRow][1];
-//        }
-
-        // display
-        if (iTime == nTime - 1) {
-            if (mpirank != mpiroot) {
-                // send row by row
-                for (int iRow = 1; iRow <= nRowsLocal; ++iRow) {
-                    MPI_Send(&currGrid[iRow][1], nCols, MPI_INT, mpiroot, 0,
-                             MPI_COMM_WORLD);
-                }
-            }
-
-            if (mpirank == mpiroot) {
-                cout << "iTime: " << iTime << "-----------------------" << endl;
-
-                // print its own data
-                for (int iRow = 1; iRow <= nRowsLocal; ++iRow) {
-                    for (int iCol = 1; iCol <= nCols; ++iCol) {
-                        if (currGrid[iRow][iCol] == 1) {
-                            cout << iRow-1 << "," << iCol-1 << endl;
-                        }
-                    }
-                }
-
-                // receive from other ranks
-                for (int sourceRank = 1; sourceRank < mpisize; ++sourceRank) {
-                    int nRecv = nRows / mpisize;
-                    int nRowsPerRank = nRecv;
-                    // last rank
-                    if (sourceRank == mpisize - 1) {
-                        nRecv += nRows % mpisize;
-                    }
-
-                    // FIX: nRecv meaning
-                    vector<int> buff(nCols, 0);
-                    for (int iRecv = 0; iRecv < nRecv; ++iRecv) {
-                        MPI_Recv(&buff[0], nCols, MPI_INT, sourceRank, 0,
-                                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                        int col_cnt = 0;
-                        for (int i : buff) {
-                            if (i == 1){
-                                cout << sourceRank * nRowsPerRank + iRecv -1 <<
-                                "," << col_cnt-1 << endl;
-                            }
-                            col_cnt++;
-                        }
-                    }
-                }
-            }
+        for (int iRow = 0; iRow < nRowsLocalWithGhost; ++iRow){
+            currGrid[iRow][0] = 0;//currGrid[iRow][nCols];
+            currGrid[iRow][nCols + 1] = 0;//currGrid[iRow][1];
         }
+
+
 
         // update the grid
         for (int iRow = 1; iRow <= nRowsLocal; ++iRow) {
@@ -283,9 +236,79 @@ int main (int argc, char* argv[]){
         }
 
     }
+    double msecs = (MPI_Wtime() - t_start) * 1000;
 
-//    MPI_Comm old_comm, new_comm;
-//    int ndims, reorder, periods[2], dim_size[2];
+    // Each MPI process sends its rank to reduction, root MPI process collects the result
+    double time_sum = 0;
+    double time_max = 0;
+    double time_min = 0;
+    MPI_Reduce(&msecs, &time_sum, 1, MPI_DOUBLE, MPI_SUM, mpiroot,
+               MPI_COMM_WORLD);
+    MPI_Reduce(&msecs, &time_max, 1, MPI_DOUBLE, MPI_MAX, mpiroot,
+               MPI_COMM_WORLD);
+    MPI_Reduce(&msecs, &time_min, 1, MPI_DOUBLE, MPI_MIN, mpiroot,
+               MPI_COMM_WORLD);
+    if(mpirank == mpiroot)
+    {
+        double avg_time = time_sum / (double)mpisize;
+        cout << "TIME: Min: " << time_min << " s " << "Avg: " << avg_time <<
+        " s " << "Max: " << time_max << endl;
+    }
+
+    // display
+    if (mpirank != mpiroot) {
+        // send row by row
+        for (int iRow = 1; iRow <= nRowsLocal; ++iRow) {
+            MPI_Send(&currGrid[iRow][1], nCols, MPI_INT, mpiroot, 0,
+                     MPI_COMM_WORLD);
+        }
+    }
+
+    if (mpirank == mpiroot) {
+        string out_name = string(argv[1]) + "." + to_string(nTime) + ".csv";
+        FILE *fout = fopen(out_name.c_str(), "w"); // printing the result to a file
+        // with
+
+        // print its own data
+        for (int iRow = 1; iRow <= nRowsLocal; ++iRow) {
+            for (int iCol = 1; iCol <= nCols; ++iCol) {
+                if (currGrid[iRow][iCol] == 1) {
+                    fprintf(fout, "%d,%d\n", iRow-1, iCol-1);
+//                    cout << iRow-1 << "," << iCol-1 << endl;
+                }
+            }
+        }
+
+        // receive from other ranks
+        for (int sourceRank = 1; sourceRank < mpisize; ++sourceRank) {
+            int nRecv = nRows / mpisize;
+            int nRowsPerRank = nRecv;
+            // last rank
+            if (sourceRank == mpisize - 1) {
+                nRecv += nRows % mpisize;
+            }
+
+            vector<int> buff(nCols, 0);
+            for (int iRecv = 0; iRecv < nRecv; ++iRecv) {
+                MPI_Recv(&buff[0], nCols, MPI_INT, sourceRank, 0,
+                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                int col_cnt = 0;
+                for (int i : buff) {
+                    if (i == 1){
+                        fprintf(fout, "%d,%d\n", sourceRank * nRowsPerRank +
+                        iRecv, col_cnt);
+//                        cout << sourceRank * nRowsPerRank + iRecv <<
+//                             "," << col_cnt << endl;
+                    }
+                    col_cnt++;
+                }
+            }
+        }
+
+        fflush(fout);
+        fclose(fout);
+    }
+
     MPI_Finalize();
     return 0;
 }
